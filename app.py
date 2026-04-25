@@ -213,14 +213,17 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         # --- Bake header & footer into images so text is NOT selectable ---
         header_rect = fitz.Rect(0, 0, rect.width, header_height)
         footer_rect = fitz.Rect(0, rect.height - footer_height, rect.width, rect.height)
-        mat = fitz.Matrix(1.5, 1.5)  # 1.5x — enough for small header text, keeps file size low
+        mat = fitz.Matrix(2.5, 2.5)  # 2.5x — sharp/crisp quality
         header_pix = page.get_pixmap(matrix=mat, clip=header_rect, colorspace=fitz.csRGB)
         footer_pix = page.get_pixmap(matrix=mat, clip=footer_rect, colorspace=fitz.csRGB)
+        # Convert to JPEG bytes (quality=92) — sharp visually but small file size
+        header_jpeg = header_pix.tobytes("jpeg", jpg_quality=92)
+        footer_jpeg = footer_pix.tobytes("jpeg", jpg_quality=92)
         page.add_redact_annot(header_rect, fill=(1, 1, 1))
         page.add_redact_annot(footer_rect, fill=(1, 1, 1))
         page.apply_redactions()
-        page.insert_image(header_rect, pixmap=header_pix)
-        page.insert_image(footer_rect, pixmap=footer_pix)
+        page.insert_image(header_rect, stream=header_jpeg)
+        page.insert_image(footer_rect, stream=footer_jpeg)
     template_doc.save(output_path, deflate=True, garbage=4)
     template_doc.close()
     user_doc.close()
