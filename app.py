@@ -198,16 +198,30 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         header_height, footer_height = (50, 50) if i < 2 else (38, 38)
         header_title = "Cover Page" if i == 0 else "AI Writing Overview" if i == 1 else "AI Writing Submission"
         header_text = f"Page {i + 1} of {len(template_doc)} - {header_title}"
+        # Draw white background
         page.draw_rect(fitz.Rect(0, 0, rect.width, header_height), fill=(1, 1, 1), color=None, overlay=True)
         page.draw_rect(fitz.Rect(0, rect.height - footer_height, rect.width, rect.height), fill=(1, 1, 1), color=None, overlay=True)
+        # Insert logos
         if os.path.exists("static/logo.png"):
             page.insert_image(fitz.Rect(20, 15, 90, 35), filename="static/logo.png")
             page.insert_image(fitz.Rect(20, rect.height - 35, 90, rect.height - 15), filename="static/logo.png")
+        # Insert text (temporarily — will be baked into image below)
         page.insert_text(fitz.Point(110, 30), header_text, fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(rect.width - 200, 30), f"Submission ID {new_id}", fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(110, rect.height - 20), header_text, fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(rect.width - 200, rect.height - 20), f"Submission ID {new_id}", fontsize=7, color=(0, 0, 0))
-    template_doc.save(output_path)
+        # --- Bake header & footer into images so text is NOT selectable ---
+        header_rect = fitz.Rect(0, 0, rect.width, header_height)
+        footer_rect = fitz.Rect(0, rect.height - footer_height, rect.width, rect.height)
+        mat = fitz.Matrix(1.5, 1.5)  # 1.5x — enough for small header text, keeps file size low
+        header_pix = page.get_pixmap(matrix=mat, clip=header_rect, colorspace=fitz.csRGB)
+        footer_pix = page.get_pixmap(matrix=mat, clip=footer_rect, colorspace=fitz.csRGB)
+        page.add_redact_annot(header_rect, fill=(1, 1, 1))
+        page.add_redact_annot(footer_rect, fill=(1, 1, 1))
+        page.apply_redactions()
+        page.insert_image(header_rect, pixmap=header_pix)
+        page.insert_image(footer_rect, pixmap=footer_pix)
+    template_doc.save(output_path, deflate=True, garbage=4)
     template_doc.close()
     user_doc.close()
 
