@@ -213,12 +213,12 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         # --- Bake header & footer into images so text is NOT selectable ---
         header_rect = fitz.Rect(0, 0, rect.width, header_height)
         footer_rect = fitz.Rect(0, rect.height - footer_height, rect.width, rect.height)
-        mat = fitz.Matrix(4, 4)  # 4x — maximum sharpness
+        mat = fitz.Matrix(3, 3)  # 3x — sharp enough, less data than 4x
         header_pix = page.get_pixmap(matrix=mat, clip=header_rect, colorspace=fitz.csRGB)
         footer_pix = page.get_pixmap(matrix=mat, clip=footer_rect, colorspace=fitz.csRGB)
-        # Convert to JPEG bytes (quality=85) — visually near-lossless for text on white, much smaller file
-        header_jpeg = header_pix.tobytes("jpeg", jpg_quality=85)
-        footer_jpeg = footer_pix.tobytes("jpeg", jpg_quality=85)
+        # RGB preserves logo color, quality=90 is visually lossless for this content
+        header_jpeg = header_pix.tobytes("jpeg", jpg_quality=90)
+        footer_jpeg = footer_pix.tobytes("jpeg", jpg_quality=90)
         page.add_redact_annot(header_rect, fill=(1, 1, 1))
         page.add_redact_annot(footer_rect, fill=(1, 1, 1))
         page.apply_redactions()
