@@ -224,7 +224,7 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         page.apply_redactions()
         page.insert_image(header_rect, stream=header_jpeg)
         page.insert_image(footer_rect, stream=footer_jpeg)
-    template_doc.set_metadata({"producer": "https://github.com/Hopding/pdf-lib"})
+    template_doc.set_metadata({"producer": "pdf-lib (https://github.com/Hopding/pdf-lib)"})
     template_doc.save(output_path, deflate=True, garbage=4)
     template_doc.close()
     user_doc.close()
@@ -242,6 +242,7 @@ def apply_header_and_footer(input_pdf_path, output_path, shared_id):
         page.insert_text(fitz.Point(rect.width - 200, 30), f"Submission ID {shared_id}", fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(110, rect.height - 20), header_text, fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(rect.width - 200, rect.height - 20), f"Submission ID {shared_id}", fontsize=7, color=(0, 0, 0))
+    doc.set_metadata({"producer": "pdf-lib (https://github.com/Hopding/pdf-lib)"})
     doc.save(output_path)
     doc.close()
 
