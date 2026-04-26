@@ -224,6 +224,7 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         page.apply_redactions()
         page.insert_image(header_rect, stream=header_jpeg)
         page.insert_image(footer_rect, stream=footer_jpeg)
+    template_doc.set_metadata({"producer": "https://github.com/Hopding/pdf-lib"})
     template_doc.save(output_path, deflate=True, garbage=4)
     template_doc.close()
     user_doc.close()
