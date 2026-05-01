@@ -5,8 +5,10 @@ import fitz  # PyMuPDF
 import shutil
 import hashlib
 import uuid
+import gc     # RAM ফ্রি করার জন্য যুক্ত করা হয়েছে
+import time   # 10 সেকেন্ড অপেক্ষা করার জন্য যুক্ত করা হয়েছে
 from datetime import datetime, timedelta
-from fastapi import FastAPI, UploadFile, File, Form, Request, Depends
+from fastapi import FastAPI, UploadFile, File, Form, Request, Depends, BackgroundTasks # BackgroundTasks যুক্ত করা হয়েছে
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -51,14 +53,12 @@ async def setup_default_accounts():
         try:
             res = supabase.table("users").select("username").eq("username", acc["username"]).execute()
             if not res.data:
-                # নতুন ইউজার হলে সব ডিফল্ট ভ্যালু সেট করো
                 supabase.table("users").insert({
                     "username": acc["username"], "password": hash_password(acc["password"]),
                     "role": acc["role"], "daily_credits": acc["credits"],
                     "credit_limit": acc["credits"], "used_credits": 0, "last_reset_date": get_bdt_date()
                 }).execute()
             else:
-                # পুরনো ইউজার হলে শুধু password ও role আপডেট করো — daily_credits বা credit_limit স্পর্শ করো না
                 supabase.table("users").update({
                     "password": hash_password(acc["password"]), "role": acc["role"]
                 }).eq("username", acc["username"]).execute()
@@ -84,7 +84,6 @@ def check_and_reset_credits(username):
             credits = row['daily_credits']
             last_date = row['last_reset_date']
             role = row['role']
-            # credit_limit থেকে রিসেট করো — admin-সেট করা মান সংরক্ষিত থাকবে
             limit = row.get('credit_limit') or (999999 if role == 'admin' else 5)
             if last_date != today:
                 supabase.table("users").update({"daily_credits": limit, "last_reset_date": today}).eq("username", username).execute()
@@ -198,36 +197,54 @@ def process_master_pdf(user_pdf_path, output_path, original_filename, ai_percent
         header_height, footer_height = (50, 50) if i < 2 else (38, 38)
         header_title = "Cover Page" if i == 0 else "AI Writing Overview" if i == 1 else "AI Writing Submission"
         header_text = f"Page {i + 1} of {len(template_doc)} - {header_title}"
-        # Draw white background
-        page.draw_rect(fitz.Rect(0, 0, rect.width, header_height), fill=(1, 1, 1), color=None, overlay=True)
-        page.draw_rect(fitz.Rect(0, rect.height - footer_height, rect.width, rect.height), fill=(1, 1, 1), color=None, overlay=True)
-        # Insert logos
+        
+        # Header ও Footer এর rect তৈরি
+        header_rect = fitz.Rect(0, 0, rect.width, header_height)
+        footer_rect = fitz.Rect(0, rect.height - footer_height, rect.width, rect.height)
+
+        # ধাপ ১: আগে পুরনো header/footer area redact করো (নিচের text মুছে ফেলো)
+        page.draw_rect(header_rect, fill=(1, 1, 1), color=None, overlay=True)
+        page.draw_rect(footer_rect, fill=(1, 1, 1), color=None, overlay=True)
+        page.add_redact_annot(header_rect, fill=(1, 1, 1))
+        page.add_redact_annot(footer_rect, fill=(1, 1, 1))
+        page.apply_redactions()
+
+        # ধাপ ২: পরিষ্কার সাদা background-এ নতুন করে logo ও text বসাও
         if os.path.exists("static/logo.png"):
             page.insert_image(fitz.Rect(20, 15, 90, 35), filename="static/logo.png")
             page.insert_image(fitz.Rect(20, rect.height - 35, 90, rect.height - 15), filename="static/logo.png")
-        # Insert text (temporarily — will be baked into image below)
         page.insert_text(fitz.Point(110, 30), header_text, fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(rect.width - 200, 30), f"Submission ID {new_id}", fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(110, rect.height - 20), header_text, fontsize=7, color=(0, 0, 0))
         page.insert_text(fitz.Point(rect.width - 200, rect.height - 20), f"Submission ID {new_id}", fontsize=7, color=(0, 0, 0))
-        # --- Bake header & footer into images so text is NOT selectable ---
-        header_rect = fitz.Rect(0, 0, rect.width, header_height)
-        footer_rect = fitz.Rect(0, rect.height - footer_height, rect.width, rect.height)
-        mat = fitz.Matrix(3, 3)  # 3x — sharp enough, less data than 4x
+
+        # ধাপ ৩: এখন high-res (3x) pixmap নাও — logo ও text সহ সবকিছু ধরা পড়বে
+        mat = fitz.Matrix(3.0, 3.0)
         header_pix = page.get_pixmap(matrix=mat, clip=header_rect, colorspace=fitz.csRGB)
         footer_pix = page.get_pixmap(matrix=mat, clip=footer_rect, colorspace=fitz.csRGB)
-        # RGB preserves logo color, quality=90 is visually lossless for this content
-        header_jpeg = header_pix.tobytes("jpeg", jpg_quality=90)
-        footer_jpeg = footer_pix.tobytes("jpeg", jpg_quality=90)
+
+        header_jpeg = header_pix.tobytes("jpeg", jpg_quality=95)
+        footer_jpeg = footer_pix.tobytes("jpeg", jpg_quality=95)
+
+        # ধাপ ৪: আবার redact করো — এবার text+logo সব মিলিয়ে image হিসেবে flatten করো
+        # (এতে header/footer এর কোনো text কপি করা যাবে না)
         page.add_redact_annot(header_rect, fill=(1, 1, 1))
         page.add_redact_annot(footer_rect, fill=(1, 1, 1))
         page.apply_redactions()
+
+        # ধাপ ৫: high-res image হিসেবে বসাও
         page.insert_image(header_rect, stream=header_jpeg)
         page.insert_image(footer_rect, stream=footer_jpeg)
+        
     template_doc.set_metadata({"producer": "pdf-lib (https://github.com/Hopding/pdf-lib)"})
     template_doc.save(output_path, deflate=True, garbage=4)
     template_doc.close()
     user_doc.close()
+    
+    # RAM থেকে অপ্রয়োজনীয় ক্যাশ মুছে ফেলা
+    del template_doc
+    del user_doc
+    gc.collect() 
 
 def apply_header_and_footer(input_pdf_path, output_path, shared_id):
     doc = fitz.open(input_pdf_path)
@@ -245,6 +262,10 @@ def apply_header_and_footer(input_pdf_path, output_path, shared_id):
     doc.set_metadata({"producer": "pdf-lib (https://github.com/Hopding/pdf-lib)"})
     doc.save(output_path)
     doc.close()
+    
+    # মেমরি ক্লিয়ার করা
+    del doc
+    gc.collect()
 
 # --- Routes ---
 @app.get("/login", response_class=HTMLResponse)
@@ -317,7 +338,6 @@ async def upload_file(request: Request, file_ai: UploadFile = File(...), file_si
         process_master_pdf(input_ai_path, output_report_path, file_ai.filename, ai_percentage, shared_submission_id)
         apply_header_and_footer(input_sim_path, output_edited_path, shared_submission_id)
 
-        # Update Daily and Used Credits
         res_u = supabase.table("users").select("used_credits").eq("username", username).execute()
         current_used = res_u.data[0].get("used_credits", 0) if res_u.data and res_u.data[0].get("used_credits") is not None else 0
 
@@ -338,19 +358,46 @@ async def upload_file(request: Request, file_ai: UploadFile = File(...), file_si
     except Exception as e:
         return HTMLResponse(content=f"<h3>Error: {str(e)}</h3>", status_code=500)
 
+# ফাইল ডিলিট করার ব্যাকগ্রাউন্ড ফাংশন
+def delete_file_and_history(file_id: int, output_path: str, upload_filename: str):
+    time.sleep(30)  # 30 সেকেন্ড অপেক্ষা করবে
+    try:
+        # লোকাল স্টোরেজ থেকে ডিলিট
+        if os.path.exists(output_path): os.remove(output_path)
+        
+        in_path = os.path.join(UPLOAD_DIR, upload_filename)
+        if os.path.exists(in_path): os.remove(in_path)
+        
+        # ডাটাবেজ (হিস্ট্রি) থেকে ডিলিট
+        supabase.table("file_history").delete().eq("id", file_id).execute()
+    except Exception as e:
+        print("Delete error:", e)
+
 @app.get("/download_past_file/{file_id}")
-async def download_past_file(request: Request, file_id: int):
+async def download_past_file(request: Request, file_id: int, background_tasks: BackgroundTasks):
     if not check_active_session(request):
         request.session.clear()
         return RedirectResponse(url="/login", status_code=303)
+    
     username = request.session.get("username")
     try:
         res = supabase.table("file_history").select("filename").eq("id", file_id).eq("username", username).execute()
         if res.data:
-            output_path = os.path.join(OUTPUT_DIR, res.data[0]['filename'])
-            if os.path.exists(output_path): return FileResponse(output_path, media_type="application/pdf", filename=res.data[0]['filename'][9:])
-    except: pass
-    return HTMLResponse("<h3>ফাইলটি সার্ভারে পাওয়া যায়নি!</h3><br><a href='/'>হোমে ফিরে যান</a>", status_code=404)
+            saved_filename = res.data[0]['filename']
+            output_path = os.path.join(OUTPUT_DIR, saved_filename)
+            
+            # অরিজিনাল আপলোড করা ফাইলের নাম বের করা
+            upload_filename = saved_filename.replace("Report_", "", 1) if saved_filename.startswith("Report_") else saved_filename.replace("Edited_", "", 1)
+            
+            if os.path.exists(output_path):
+                # ডাউনলোড রেসপন্স রিটার্ন করার পাশাপাশি ব্যাকগ্রাউন্ডে ১০ সেকেন্ডের ডিলিট টাস্ক রান করবে
+                background_tasks.add_task(delete_file_and_history, file_id, output_path, upload_filename)
+                
+                return FileResponse(output_path, media_type="application/pdf", filename=saved_filename[9:])
+    except Exception as e: 
+        print(e)
+        
+    return HTMLResponse("<h3>ফাইলটি সার্ভারে পাওয়া যায়নি বা ইতিমধ্যে ডিলিট হয়ে গেছে!</h3><br><a href='/'>হোমে ফিরে যান</a>", status_code=404)
 
 @app.post("/delete_my_file")
 async def delete_my_file(request: Request, file_id: int = Form(...)):
@@ -387,7 +434,6 @@ async def admin_dashboard(request: Request):
         if users_res.data:
             for u in users_res.data:
                 uname = u['username']
-                # credit_logs ব্যবহার: প্রতি আপলোডে মাত্র ১টি entry, তাই সঠিক count পাওয়া যাবে
                 logs_today = supabase.table("credit_logs").select("id").eq("username", uname).eq("usage_date", today).execute()
                 used_today = len(logs_today.data) if logs_today.data else 0
                 total_used = u.get('used_credits', 0) if u.get('used_credits') is not None else 0
@@ -423,7 +469,6 @@ async def create_user(request: Request, new_username: str = Form(...), new_passw
 async def update_credits(request: Request, up_username: str = Form(...), new_credits: int = Form(...)):
     if not check_active_session(request) or request.session.get("role") != "admin": return HTMLResponse("Access Denied", status_code=403)
     try:
-        # daily_credits (আজকের বাকি) এবং credit_limit (রোজকার সীমা) দুটোই আপডেট করো
         supabase.table("users").update({"daily_credits": int(new_credits), "credit_limit": int(new_credits)}).eq("username", up_username).execute()
     except: pass
     return RedirectResponse(url="/admin", status_code=303)
